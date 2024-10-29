@@ -25,7 +25,15 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# my
+.DS_Store
 not_important
+.idea
+
+config.py
+dns_cache.json
+test_nets_hw_1.py
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
