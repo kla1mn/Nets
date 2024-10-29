@@ -86,19 +86,18 @@ class DNSResolver:
             if offset + 10 > len(response):  # Проверка, что достаточно байт для имени, типа и класса
                 break
 
-            offset += 2  # Пропускаем имя (ссылку на имя)
+            offset += 2
             rtype = struct.unpack(">H", response[offset:offset + 2])[0]
             rclass = struct.unpack(">H", response[offset + 2:offset + 4])[0]
             ttl = struct.unpack(">I", response[offset + 4:offset + 8])[0]
             rdlength = struct.unpack(">H", response[offset + 8:offset + 10])[0]
             offset += 10
 
-            # Проверка, что оставшихся байт достаточно для rdata
             if offset + rdlength > len(response):
                 break
 
             # Сохраняем только записи типа A (rtype == 1)
-            if rtype == 1 and rdlength == 4:  # IPv4-адрес имеет длину 4 байта
+            if rtype == 1 and rdlength == 4:
                 ip = response[offset:offset + 4]
                 ip_addresses.append(".".join(map(str, ip)))
             offset += rdlength
@@ -106,17 +105,13 @@ class DNSResolver:
         return ip_addresses if ip_addresses else None
 
     async def resolve(self, domain):
-        # Проверка на .multiply.
         if ".multiply." in domain:
             ip_address = await self.handle_multiply(domain)
             return [ip_address]
 
-        # Проверка кэша
         cached_ip = self.cache.get_value(domain)
         if cached_ip:
-            print("Cache hit")
             return cached_ip
-        print("Resolving", domain)
         packet = DNSPacket(domain).create_packet()
         response = await self.send_query(packet)
 
