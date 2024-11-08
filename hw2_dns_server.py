@@ -28,18 +28,17 @@ class DNSServer:
         return response if response else self._create_error_response(header[0])
 
     def _parse_query(self, data):
-        header = struct.unpack('!HHHHHH', data[:12])
+        header = struct.unpack('!6H', data[:12])
         question = data[12:]
         return header, question
 
     def _bytes_to_domain(self, data):
-        parts = []
-        i = 0
+        parts, i = [], 0
         while i < len(data):
             length = data[i]
             if length == 0:
                 break
-            parts.append(data[i + 1:i + 1 + length].decode())
+            parts.append(data[i + 1: i + 1 + length].decode())
             i += length + 1
         return '.'.join(parts)
 
@@ -50,22 +49,18 @@ class DNSServer:
         return self._create_response(id, domain, f'127.0.0.{result}')
 
     def _resolve(self, query, server):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.sendto(query, (server, 53))
-                s.settimeout(5)
-                response, _ = s.recvfrom(512)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(query, (server, 53))
+            s.settimeout(5)
+            response = s.recv(512)
 
-            header = struct.unpack('!HHHHHH', response[:12])
-            if header[3] > 0:
-                return response
-            elif header[4] > 0:
-                next_server = self._extract_next_server(response)
-                if next_server:
-                    return self._resolve(query, next_server)
-
-        except socket.timeout:
-            pass
+        header = struct.unpack('!6H', response[:12])
+        if header[3] > 0:
+            return response
+        elif header[4] > 0:
+            next_server = self._extract_next_server(response)
+            if next_server:
+                return self._resolve(query, next_server)
         return None
 
     def _extract_next_server(self, data):
@@ -94,14 +89,14 @@ class DNSServer:
         return None
 
     def _create_response(self, id, domain, ip):
-        header = struct.pack('!HHHHHH', id, 0x8180, 1, 1, 0, 0)
-        question = self._domain_to_question(domain) + struct.pack('!HH', 1, 1)
+        header = struct.pack('!6H', id, 0x8180, 1, 1, 0, 0)
+        question = self._domain_to_question(domain) + struct.pack('!2H', 1, 1)
         answer = self._domain_to_question(domain) + struct.pack('!HHIH', 1, 1, 60, 4) + socket.inet_aton(ip)
         return header + question + answer
 
     def _create_error_response(self, id) -> bytes:
-        return (struct.pack('!HHHHHH', id, 0x8183, 1, 0, 0, 0)
-                + self._domain_to_question("error.local") + struct.pack('!HH', 1, 1))
+        return (struct.pack('!6H', id, 0x8183, 1, 0, 0, 0)
+                + self._domain_to_question("error.local") + struct.pack('!2H', 1, 1))
 
     def _domain_to_question(self, domain) -> bytes:
         return b''.join(struct.pack('B', len(part)) + part.encode() for part in domain.split('.')) + b'\x00'
