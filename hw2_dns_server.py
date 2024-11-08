@@ -1,195 +1,113 @@
-import struct
-import random
 import socket
-import asyncio
-import time
-import json
-import os
+import struct
 
-"""
-FLAGS
-QR: 0 - query(request), 1 - response (1 bit)
-OPCODE: - request type - 0 - standard query, 1 - inverse query, 2 - server status, 3..15 - for future (4 bit)
-AA: 0 - not authoritative answer, 1 - authoritative answer (1 bit)
-TC: truncated - 0 - not, 1 - truncated (1 bit)
-RD: recursion desired - 0 - not, 1 - recursion desired (1 bit)
-RA: recursion available - 0 - not, 1 - recursion desired (1 bit)
-Z: for future - 0 (1 bit)
-RCODE: status - 0 if success, else ... (4 bit)
-"""
-
-CACHE_FILE = "dns_cache.json"
-ROOT_SERVER = "198.41.0.4"  # a.root-servers.net
+from math import prod
 
 
-class DNSHeader:
+class DNSServer:
     def __init__(self):
-        self.transaction_id = random.randint(0, 65535)
-        self.flags = 0x0100
-        self.qdcount = 1
-        self.ancount = 0
-        self.nscount = 0
-        self.arcount = 0
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('0.0.0.0', 53))
+        self.root_server = "198.41.0.4"  # a.root-servers.net
 
-    def create_header(self) -> bytes:
-        header = struct.pack(">HHHHHH", self.transaction_id, self.flags,
-                             self.qdcount, self.ancount, self.nscount, self.arcount)
-        return header
+    def process(self):
+        while True:
+            data, addr = self.socket.recvfrom(512)
+            response = self._process_query(data)
+            self.socket.sendto(response, addr)
 
+    def _process_query(self, data):
+        header, question = self._parse_query(data)
+        domain = self._bytes_to_domain(question)
 
-class DNSQuestion:
-    def __init__(self, domain, qtype=1, qclass=1):
-        self.domain = domain
-        self.qtype = qtype
-        self.qclass = qclass
+        if 'multiply' in domain:
+            return self._handle_multiply(domain, header[0])
 
-    def create_question(self):
-        return self._encode_domain() + struct.pack(">HH", self.qtype, self.qclass)
+        response = self._resolve(data, self.root_server)
 
-    def _encode_domain(self):
-        parts = self.domain.split(".")
-        encoded_domain = b"".join((bytes([len(part)]) + part.encode() for part in parts))
-        return encoded_domain + b"\x00"
+        return response if response else self._create_error_response(header[0])
 
+    def _parse_query(self, data):
+        header = struct.unpack('!HHHHHH', data[:12])
+        question = data[12:]
+        return header, question
 
-class DNSPacket:
-    def __init__(self, domain):
-        self.header = DNSHeader()
-        self.question = DNSQuestion(domain)
+    def _bytes_to_domain(self, data):
+        parts = []
+        i = 0
+        while i < len(data):
+            length = data[i]
+            if length == 0:
+                break
+            parts.append(data[i + 1:i + 1 + length].decode())
+            i += length + 1
+        return '.'.join(parts)
 
-    def create_packet(self):
-        return self.header.create_header() + self.question.create_question()
+    def _handle_multiply(self, domain, id):
+        parts = domain.split('.')
+        numbers = [int(part) for part in parts if part.isdigit()]
+        result = prod(numbers) % 256
+        return self._create_response(id, domain, f'127.0.0.{result}')
 
+    def _resolve(self, query, server):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.sendto(query, (server, 53))
+                s.settimeout(5)
+                response, _ = s.recvfrom(512)
 
-class DNSResolver:
-    def __init__(self, server='8.8.8.8', port=53):
-        self.server = server
-        self.port = port
-        self.cache = DNSCache()
-
-    async def send_query(self, packet):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(5)
-            sock.sendto(packet, (self.server, self.port))
-            try:
-                response = sock.recv(512)
+            header = struct.unpack('!HHHHHH', response[:12])
+            if header[3] > 0:
                 return response
-            except socket.timeout:
-                print("Request timed out")
-                return None
+            elif header[4] > 0:
+                next_server = self._extract_next_server(response)
+                if next_server:
+                    return self._resolve(query, next_server)
 
-    async def parse_response(self, response):
-        if not response or len(response) < 12:
-            return None
+        except socket.timeout:
+            pass
+        return None
 
-        header = response[:12]
-        qdcount = struct.unpack(">H", header[4:6])[0]
-        ancount = struct.unpack(">H", header[6:8])[0]
-
+    def _extract_next_server(self, data):
         offset = 12
-        for _ in range(qdcount):
-            while offset < len(response) and response[offset] != 0:
+        questions = struct.unpack('!H', data[4:6])[0]
+        for _ in range(questions):
+            while data[offset] != 0:
                 offset += 1
             offset += 5
 
-        ip_addresses = []
-        for _ in range(ancount):
-            if offset + 10 > len(response):
-                break
-
-            offset += 2
-            rtype = struct.unpack(">H", response[offset:offset + 2])[0]
-            rclass = struct.unpack(">H", response[offset + 2:offset + 4])[0]
-            ttl = struct.unpack(">I", response[offset + 4:offset + 8])[0]
-            rdlength = struct.unpack(">H", response[offset + 8:offset + 10])[0]
-            offset += 10
-
-            if offset + rdlength > len(response):
-                break
-
-            if rtype == 1 and rdlength == 4:
-                ip = response[offset:offset + 4]
-                ip_addresses.append(".".join(map(str, ip)))
-            offset += rdlength
-
-        return ip_addresses if ip_addresses else None
-
-    async def resolve(self, domain):
-        if ".multiply." in domain:
-            ip_address = await self.handle_multiply(domain)
-            return [ip_address]
-
-        cached_ip = self.cache.get_value(domain)
-        if cached_ip:
-            print("Cache hit")
-            return cached_ip
-        print("Resolving", domain)
-        packet = DNSPacket(domain).create_packet()
-        response = await self.send_query(packet)
-
-        ip_addresses = await self.parse_response(response)
-        if ip_addresses:
-            self.cache.add_value(domain, ip_addresses)
-        return ip_addresses
-
-    async def handle_multiply(self, domain) -> str:
-        parts = domain.split(".")
-        try:
-            nums = [int(part) for part in parts if part.isdigit()]
-            result = 1
-            for num in nums:
-                result = (result * num) % 256
-            return f"127.0.0.{result}"
-        except ValueError:
-            return "127.0.0.1"
-
-
-class DNSCache:
-    def __init__(self):
-        self.cache = self._load_cache()
-
-    def _load_cache(self):
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        return {}
-
-    def _save_cache(self):
-        with open(CACHE_FILE, "w") as f:
-            json.dump(self.cache, f)
-
-    def add_value(self, domain, ip_addresses, ttl=300):
-        expire_time = time.time() + ttl
-        self.cache[domain] = (ip_addresses, expire_time)
-        self._save_cache()
-
-    def get_value(self, domain):
-        if domain in self.cache:
-            ip_addresses, expire_time = self.cache[domain]
-            if time.time() < expire_time:
-                return ip_addresses
+        additional_count = struct.unpack('!H', data[10:12])[0]
+        for _ in range(additional_count):
+            if data[offset:offset + 2] == b'\xc0\x0c':
+                offset += 2
             else:
-                del self.cache[domain]
-                self._save_cache()
+                while data[offset] != 0:
+                    offset += 1
+                offset += 1
+            record_type = struct.unpack('!H', data[offset:offset + 2])[0]
+            offset += 8
+            data_length = struct.unpack('!H', data[offset:offset + 2])[0]
+            offset += 2
+            if record_type == 1:
+                return socket.inet_ntoa(data[offset:offset + 4])
+            offset += data_length
         return None
 
+    def _create_response(self, id, domain, ip):
+        header = struct.pack('!HHHHHH', id, 0x8180, 1, 1, 0, 0)
+        question = self._domain_to_question(domain) + struct.pack('!HH', 1, 1)
+        answer = self._domain_to_question(domain) + struct.pack('!HHIH', 1, 1, 60, 4) + socket.inet_aton(ip)
+        return header + question + answer
 
-async def main():
-    resolver = DNSResolver()
-    print("Enter domain name or Q/Exit to exit.")
+    def _create_error_response(self, id) -> bytes:
+        return (struct.pack('!HHHHHH', id, 0x8183, 1, 0, 0, 0)
+                + self._domain_to_question("error.local") + struct.pack('!HH', 1, 1))
 
-    while True:
-        domain = input("Domain: ").strip()
-        if domain.lower() in ["exit", "q"]:
-            print("Exit")
-            break
-
-        ip_addresses = await resolver.resolve(domain)
-        if ip_addresses:
-            print(f"Resolved IPs for {domain}: {ip_addresses}")
-        else:
-            print(f"Can't resolve domain: {domain}")
+    def _domain_to_question(self, domain) -> bytes:
+        return b''.join(struct.pack('B', len(part)) + part.encode() for part in domain.split('.')) + b'\x00'
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    server = DNSServer()
+    print(f"Start local dns server")
+    server.process()
