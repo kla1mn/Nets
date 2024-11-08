@@ -11,27 +11,27 @@ class DNSServer:
         self.socket.bind(('0.0.0.0', 53))
         self.root_server = "192.203.230.10"  # e.root-servers.net
 
-    def process(self) -> None:
+    def run_server(self) -> None:
         while True:
             data, addr = self.socket.recvfrom(512)
-            response = self._process_query(data)
+            response = self._handle_request(data)
             self.socket.sendto(response, addr)
 
-    def _process_query(self, data: bytes) -> bytes:
-        header, question = self._parse_query(data)
-        domain = self._get_domain_from_bytes(question)
+    def _handle_request(self, data: bytes) -> bytes:
+        header, question = self._extract_query_parts(data)
+        domain = self._decode_domain_name(question)
         if 'multiply' in domain:
-            return self._handle_multiply(domain, header[0])
-        response = self._resolve(data, self.root_server)
-        return response if response else self._generate_error_response(header[0])
+            return self._process_multiply_query(domain, header[0])
+        response = self._iterative_resolve(data, self.root_server)
+        return response if response else self._create_error_response(header[0])
 
-    def _handle_multiply(self, domain: str, id: int) -> bytes:
+    def _process_multiply_query(self, domain: str, id: int) -> bytes:
         parts = domain.split('.')
         numbers = [int(part) for part in parts if part.isdigit()]
         result = prod(numbers) % 256
-        return self._generate_response(id, domain, f'127.0.0.{result}')
+        return self._create_dns_response(id, domain, f'127.0.0.{result}')
 
-    def _resolve(self, query: bytes, server: str) -> Optional[bytes]:
+    def _iterative_resolve(self, query: bytes, server: str) -> Optional[bytes]:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.sendto(query, (server, 53))
             s.settimeout(5)
@@ -40,29 +40,30 @@ class DNSServer:
         if header[3] > 0:
             return response
         elif header[4] > 0:
-            next_server = self._get_next_server(response)
+            next_server = self._find_next_server_name(response)
             if next_server:
-                return self._resolve(query, next_server)
+                return self._iterative_resolve(query, next_server)
         return None
 
-    def _generate_response(self, id: int, domain: str, ip: str) -> bytes:
+    def _create_dns_response(self, id: int, domain: str, ip: str) -> bytes:
         header = struct.pack('!6H', id, 0x8180, 1, 1, 0, 0)
-        question = self._domain_to_question(domain) + struct.pack('!2H', 1, 1)
-        answer = self._domain_to_question(domain) + struct.pack('!HHIH', 1, 1, 60, 4) + socket.inet_aton(ip)
+        question = self._encode_domain_question(domain) + struct.pack('!2H', 1, 1)
+        answer = (self._encode_domain_question(domain)
+                  + struct.pack('!HHIH', 1, 1, 60, 4) + socket.inet_aton(ip))
         return header + question + answer
 
-    def _generate_error_response(self, id: int) -> bytes:
+    def _create_error_response(self, id: int) -> bytes:
         return (struct.pack('!6H', id, 0x8183, 1, 0, 0, 0)
-                + self._domain_to_question("error.local") + struct.pack('!2H', 1, 1))
+                + self._encode_domain_question("error.local") + struct.pack('!2H', 1, 1))
 
     @staticmethod
-    def _parse_query(data: bytes) -> tuple[tuple[Any, ...], int | bytes]:
+    def _extract_query_parts(data: bytes) -> tuple[tuple[Any, ...], int | bytes]:
         header = struct.unpack('!6H', data[:12])
         question = data[12:]
         return header, question
 
     @staticmethod
-    def _get_domain_from_bytes(data: bytes) -> str:
+    def _decode_domain_name(data: bytes) -> str:
         parts, i = [], 0
         while i < len(data):
             length = data[i]
@@ -73,7 +74,7 @@ class DNSServer:
         return '.'.join(parts)
 
     @staticmethod
-    def _get_next_server(data: bytes) -> Optional[str]:
+    def _find_next_server_name(data: bytes) -> Optional[str]:
         offset = 12
         questions = struct.unpack('!H', data[4:6])[0]
         for _ in range(questions):
@@ -98,11 +99,11 @@ class DNSServer:
         return None
 
     @staticmethod
-    def _domain_to_question(domain: str) -> bytes:
+    def _encode_domain_question(domain: str) -> bytes:
         return b''.join(struct.pack('B', len(part)) + part.encode() for part in domain.split('.')) + b'\x00'
 
 
 if __name__ == "__main__":
     server = DNSServer()
     print(f"Start local dns server")
-    server.process()
+    server.run_server()
