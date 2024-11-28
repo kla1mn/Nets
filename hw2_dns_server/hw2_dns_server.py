@@ -9,7 +9,7 @@ class DNSServer:
     def __init__(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 53))
-        self.root_server = "192.203.230.10"  # e.root-servers.net
+        self.root_server = "198.41.0.4"  # a.root-servers.net
 
     def run_server(self) -> None:
         while True:
