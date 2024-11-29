@@ -4,14 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
 import logging
 
-from scapy.layers.inet import TCP, IP
+from scapy.layers.inet import TCP, IP, UDP, ICMP
 from scapy.packet import Packet
 from scapy.sendrecv import sr1
 
 TIMEOUT = 2
 THREADS_NUMBER = 10
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 reserved_ports = {
     7: "ECHO",
@@ -45,8 +45,8 @@ def main():
 
     tcp_ports, udp_ports = _get_tcp_and_udp_ports_sets(ports)
 
-    _print_open_tcp_ports(ip_address, tcp_ports, timeout, threads_num, verbose, guess)
-    _print_open_udp_ports(ip_address, udp_ports, timeout, threads_num, verbose, guess)
+    _handle_tcp_ports(ip_address, tcp_ports, timeout, threads_num, verbose, guess)
+    _handle_udp_ports(ip_address, udp_ports, timeout, threads_num, guess)
 
 
 def _construct_args_parser():
@@ -82,32 +82,75 @@ def _parse_port(port, ports):
             ports.add(int(part))
 
 
-def _print_open_udp_ports(ip_address, udp_ports, timeout, threads_num, verbose, guess):
-    pass
-
-
-def _print_open_tcp_ports(ip_address, tcp_ports, timeout, threads_num, verbose, guess):
+def _handle_udp_ports(ip_address, udp_ports, timeout, threads_num, guess):
     with ThreadPoolExecutor(max_workers=threads_num) as executor:
         futures = [
-            executor.submit(_scan_and_print, port, ip_address, timeout, verbose, guess)
+            executor.submit(_scan_udp_port, port, ip_address, timeout, guess)
+            for port in udp_ports
+        ]
+        for future in futures:
+            future.result()
+
+
+def _scan_udp_port(port, ip_address, timeout, guess):
+    logging.debug(f"Scanning UDP port {port}")
+    status = _handle_udp_port(port, ip_address, timeout)
+    if status == Responses.OPEN:
+        _print_udp_port(guess, port)
+
+
+def _print_udp_port(guess, port):
+    res = ["UDP", str(port)]
+    if guess:
+        res.append(reserved_ports.get(port, '-'))
+    print(" ".join(res))
+
+
+def _handle_udp_port(dport, ip_address, timeout):
+    packet = IP(dst=ip_address) / UDP(dport=dport)
+    try:
+        response = sr1(packet, timeout=timeout, verbose=False)
+        if response:
+            if response.haslayer(UDP):
+                return Responses.OPEN
+            if response.haslayer(ICMP):
+                icmp_type = response[ICMP].type
+                icmp_code = response[ICMP].code
+                if icmp_type == 3 and icmp_code == 3:
+                    return Responses.CLOSED
+        return Responses.CLOSED
+
+    except Exception as e:
+        logging.debug(f"Error scanning UDP port {dport}: {e}")
+        return Responses.ERROR
+
+
+def _handle_tcp_ports(ip_address, tcp_ports, timeout, threads_num, verbose, guess):
+    with ThreadPoolExecutor(max_workers=threads_num) as executor:
+        futures = [
+            executor.submit(_scan_tcp_port, port, ip_address, timeout, verbose, guess)
             for port in tcp_ports
         ]
         for future in futures:
             future.result()
 
 
-def _scan_and_print(port, ip_address, timeout, verbose, guess):
+def _scan_tcp_port(port, ip_address, timeout, verbose, guess):
     start = time.time()
     logging.debug(f"Scanning port {port}")
     response = _handle_tcp_port(port, ip_address, timeout)
     time_ms = time.time() - start
     if response == Responses.OPEN:
-        res = ["TCP", str(port)]
-        if verbose:
-            res.append(f"{time_ms:.2f}ms")
-        if guess:
-            res.append(reserved_ports.get(port, '-'))
-        print(" ".join(res))
+        _print_tcp_port(guess, port, time_ms, verbose)
+
+
+def _print_tcp_port(guess, port, time_ms, verbose):
+    res = ["TCP", str(port) + " " * (5 - len(str(port)))]
+    if verbose:
+        res.append(f"{time_ms:.2f}ms")
+    if guess:
+        res.append(reserved_ports.get(port, '-'))
+    print(" ".join(res))
 
 
 def _handle_tcp_port(dport, ip_address, timeout):
