@@ -42,7 +42,7 @@ def query_whois(ip_str):
             asn = _do_whois_query(server, query_func(ip_str))
             if asn is not None:
                 return asn
-        except:
+        except Exception:
             pass
     return None
 
@@ -71,7 +71,7 @@ def _configurate_arg_parser():
     parser.add_argument('proto', type=str, choices=['icmp', 'tcp', 'udp'], help='Protocol')
     parser.add_argument('-t', type=float, default=2.0, help='Timeout in seconds')
     parser.add_argument('-p', type=int, default=80, help='Port')
-    parser.add_argument('-n', type=int, default=30, help='Max number of hops')
+    parser.add_argument('-n', type=int, default=50, help='Max number of hops')
     parser.add_argument('-v', action='store_true', help='AS number')
     return parser
 
@@ -130,8 +130,8 @@ def _print_hop(hop_num, resp_ip, rtt, verbose, destination_ip):
 def main():
     parser = _configurate_arg_parser()
     args = parser.parse_args()
-    traceroute(destination_ip=args.dst, protocol=args.proto, timeout=args.timeout,
-               port=args.port, max_hops=args.max_hops, verbose=args.verbose)
+    traceroute(destination_ip=args.dst, protocol=args.proto, timeout=args.t,
+               port=args.p, max_hops=args.n, verbose=args.v)
 
 
 if __name__ == '__main__':
